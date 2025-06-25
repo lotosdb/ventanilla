@@ -35,10 +35,25 @@
             width: 100%;
             height: 40%;
             overflow: auto;
+            display: flex;
+            flex-direction: row;
+            gap: 16px; /* Espacio entre tablas, opcional */
         }
-
+        #tableDiv, #interesadoTableDiv {
+            flex: 1 1 0;
+            min-width: 0;
+            height: 100%;
+        }
         #modal ul li {
             margin-bottom: 0.5rem;
+        }
+
+        .esri-search,
+        .esri-editor {
+            min-width: 300px; /* Ajusta este valor según lo necesites */
+            max-width: 300px;
+            width: 300px;
+            box-sizing: border-box;
         }
     </style>
     <script>
@@ -49,10 +64,11 @@
         "esri/widgets/FeatureTable",
         "esri/core/reactiveUtils",
         "esri/widgets/Editor",
+        "esri/widgets/Popup",
         "esri/config",
         "esri/identity/OAuthInfo",
         "esri/identity/IdentityManager"
-    ], (MapView, WebMap, Search, FeatureTable, reactiveUtils, Editor, esriConfig, OAuthInfo, IdentityManager) => {
+    ], (MapView, WebMap, Search, FeatureTable, reactiveUtils, Editor, Popup, esriConfig, OAuthInfo, IdentityManager) => {
 
         (async () =>{
             esriConfig.portalUrl = "https://pruebassig.igac.gov.co/portal";
@@ -83,15 +99,30 @@
         });
         const view = new MapView({
           map: webmap,
-          container: "viewDiv"
+          container: "viewDiv",
+          popup: new Popup({
+            dockEnabled: true,
+            dockOptions: {
+              // Disables the dock button from the popup
+              buttonEnabled: false,
+              // Ignore the default sizes that trigger responsive docking
+              breakpoint: false,
+              position: "bottom-left" // Position the popup at the bottom left
+            },
+
+            visibleElements: {
+              closeButton: false
+            }
+          }),
         });
 
         // Espera a que el webmap cargue las capas
         await webmap.when();
+        console.log("WebMap cargado:", webmap);
 
         webmap.layers.forEach(layer => {
             console.log("Layer title:", layer.title, "type:", layer.type);
-            // Si es group, muestra sus subcapas
+            // Si es group, muestra sus sub Capas
             if (layer.type === "group") {
             layer.layers.forEach(async sublayer => {
                 console.log("  SubLayer title:", sublayer.title, "type:", sublayer.type);
@@ -99,15 +130,26 @@
             });
             }
         });
+        
+        webmap.tables.forEach(table => {
+            console.log("Table title:", table.title, "table:", table);
+        });
 
-        // Busca la subcapa "Predio" dentro del GroupLayer
-        const groupLayer = webmap.layers.find(layer => layer.type === "group");
+        const predioLayer = webmap.allLayers.find(layer => layer.title === "Predio" && layer.type === "feature");
+        await predioLayer.load();
+        console.log("FeatureLayer encontrado:", predioLayer.relationships);
+
+        const interesadoLayer = webmap.tables.find(layer => layer.title === "Interesado" && layer.type === "feature");
+        await interesadoLayer.load();
+        console.log("FeatureLayer encontrado:", interesadoLayer.relationships);
+        // Busca la sub capa "Predio" dentro del GroupLayer
+       /* const groupLayer = webmap.layers.find(layer => layer.type === "group");
         let featureLayer;
         if (groupLayer) {
             featureLayer = groupLayer.layers.find(sublayer => sublayer.title === "Predio");
         }
         await featureLayer.load();
-        console.log("FeatureLayer encontrado:", featureLayer.relationships);
+        console.log("FeatureLayer encontrado:", featureLayer.relationships);*/
 
         //=========================================================
         //   Ejemplariza el widget Search y se agrega a la vista
@@ -116,7 +158,7 @@
             view: view,
             allPlaceholder: "Buscar número predial, matrícula, código ORIP, dirección o lugar...",
             sources: [{
-                layer: featureLayer,
+                layer: predioLayer,
                 searchFields: [
                     "numero_predial_nacional",
                     "matricula_inmobiliaria",
@@ -127,7 +169,20 @@
                 outFields: ["*"],
                 name: "Buscar en Predio",
                 placeholder: "Buscar por predial, matrícula o código ORIP..."
-            }]
+            },
+            {
+                layer: interesadoLayer,
+                searchFields: [
+                    "nombre",
+                    "documento_identidad"
+                ], // campo a buscar
+                displayField: "nombre", // campo a mostrar en resultados
+                exactMatch: false,
+                outFields: ["*"],
+                name: "Buscar en Interesado",
+                placeholder: "Buscar por número de documento o nombre..."
+            }
+        ]
         });
 
         view.ui.add(searchWidget, "top-right");
@@ -138,7 +193,7 @@
         const editor = new Editor({
             view: view,
             layerInfos: [{
-                layer: featureLayer
+                layer: predioLayer
             }]
         });
 
@@ -147,7 +202,7 @@
        await reactiveUtils.whenOnce(() => !view.updating); 
 
        //Se asegura que la capa de entidades esté cargada antes de crear la tabla
-       await reactiveUtils.whenOnce(() => featureLayer.loaded);
+       await reactiveUtils.whenOnce(() => predioLayer.loaded);
 
        // Crea la tabla de atributos
        const featureTable = new FeatureTable({
@@ -184,7 +239,7 @@
             pagination: true,
             editingEnabled: true,
             relatedRecordsEnabled: true,
-            layer: featureLayer,
+            layer: predioLayer,
             tableTemplate:{
                 columnTemplates: [
                     {
@@ -224,11 +279,53 @@
             container: document.getElementById("tableDiv")
         });
 
+        const interesadoFeatureTable = new FeatureTable({
+            title: () => {
+                if(!featureTable) {
+                    return;
+                }
+
+                const state = interesadoFeatureTable.state;
+                switch (state){
+                    case "loading":
+                        return "Cargando datos...";
+                    case "loaded":
+                        const title = interesadoFeatureTable.layer?.title;
+                        const rowCount = interesadoFeatureTable.size;
+                        const selectedCount = interesadoFeatureTable.highlightIds?.length ?? 0;
+                        return `${title} (${selectedCount} filas seleccionadas del total de ${rowCount})`;
+                    case "error":
+                        return "Error al cargar datos.";
+                    default:
+                        return;
+                }
+            },
+            description: "Datos de los interesados",
+            actionColumnConfig: {
+                label: "Ir a la entidad",
+                icon: "zoom-to-object",
+                callback: (params) =>{
+                    view.goTo(params.feature)
+                }
+            },
+            view: view,
+            attachmentsEnabled: true,
+            pagination: true,
+            editingEnabled: true,
+            relatedRecordsEnabled: true,
+            layer: interesadoLayer, // tu tabla/capa de interesados
+            container: document.getElementById("interesadoTableDiv"),
+            visibleElements: {
+                menu: true,
+                selectionColumn: true
+            }
+        });
         reactiveUtils.when(
             () => view.stationary,
             () => {
                 //Filtra y muestra solo las entidades visibles en la tabla de entidades
                 featureTable.filterGeometry = view.extent;
+                interesadoFeatureTable.filterGeometry = view.extent;
             },
             {
                 initial: true // Ejecuta inmediatamente
@@ -239,12 +336,47 @@
         view.on("click", async (event) =>{
             const response = await view.hitTest(event);
             const candidate = response.results.find(
-                (result) => result.graphic && result.graphic.layer === featureLayer
+                (result) => result.graphic && result.graphic.layer === predioLayer
             );
 
             if(candidate) {
 
                 editor.startUpdateWorkflowAtFeatureSelection(candidate.graphic);
+
+                // 1. Consulta los derechos relacionados al predio
+                /*const derechos = await predioLayer.queryRelatedFeatures({
+                    outFields: ["*"],
+                    relationshipId: 2, // ID de la relación Predio-Derecho
+                    objectIds: [candidate.graphic.attributes.OBJECTID]
+                });
+
+                // 2. Obtén los OBJECTID de los derechos
+                const derechosIds = [];
+                for (const rel in derechos) {
+                    derechos[rel].features.forEach(f => derechosIds.push(f.attributes.OBJECTID));
+                }
+
+                // 3. Consulta los interesados relacionados a esos derechos
+                if (derechosIds.length > 0) {
+                    const interesados = await derechoLayer.queryRelatedFeatures({
+                        outFields: ["*"],
+                        relationshipId: 13, // ID de la relación Derecho-Interesado
+                        objectIds: derechosIds
+                    });
+
+                    // 4. Obtén los interesados y actualiza la tabla
+                    const interesadosFeatures = [];
+                    for (const rel in interesados) {
+                        interesados[rel].features.forEach(f => interesadosFeatures.push(f));
+                    }
+
+                    // Actualiza la tabla de interesados
+                    interesadoFeatureTable.layer.definitionExpression = "OBJECTID IN (" + interesadosFeatures.map(f => f.attributes.OBJECTID).join(",") + ")";
+                } else {
+                    // Si no hay derechos, limpia la tabla de interesados
+                    interesadoFeatureTable.layer.definitionExpression = "1=0";
+                }*/
+
                 const objectId = candidate.graphic.attributes.OBJECTID;
                 const index = featureTable.highlightIds.indexOf(objectId);
 
@@ -294,7 +426,7 @@
             ) {
                 view.goTo({
                     target: event.result.feature.geometry,
-                    scale: 2000 // Ajusta el nivel de zoom según lo necesites
+                    scale: 200 // Ajusta el nivel de zoom según lo necesites
                 });
 
                 // Actualiza la tabla para mostrar solo el predio encontrado
@@ -313,6 +445,7 @@
     <div id="viewDiv"></div>
     <div class="container">
       <div id="tableDiv"></div>
+      <!--<div id="interesadoTableDiv"></div>-->
     </div>
   </body>
 </html>
